@@ -12,7 +12,7 @@ class Reader(discord.Client):
         await tree.sync(guild=GUILD)
         print("Registered /quran for server", GUILD.id, flush=True)
 
-client = Reader(intents=discord.Intents(guilds=True))
+client = Reader(intents=discord.Intents(guilds=True, guild_messages=True, message_content=True))
 tree = app_commands.CommandTree(client)
 
 def panel(c, v, data, plain, owner):
@@ -36,6 +36,27 @@ def panel(c, v, data, plain, owner):
     if not plain:
         view.add_item(discord.ui.Button(label="Source and notes",url=f"https://submission.org/QI#{c}:{v}"))
     return embed,view
+
+SHORTCUT = re.compile(r"[Qq][ \t]*([0-9]{1,3})(?:[ \t]*:[ \t]*|[ \t]+)([0-9]{1,3})")
+
+@client.event
+async def on_message(message):
+    if (message.author.bot or message.webhook_id or not message.guild
+            or message.guild.id != GUILD.id or message.channel.id not in CHANNELS):
+        return
+    match = SHORTCUT.fullmatch(message.content.strip())
+    if not match:
+        return
+    c,v = map(int,match.groups())
+    try:
+        validate_reference(c,v)
+        async with reader_lock:
+            data = await get_quran_text()
+    except SetupError as exc:
+        await message.channel.send(str(exc))
+        return
+    embed,view = panel(c,v,data,False,message.author.id)
+    await message.channel.send(embed=embed,view=view)
 
 @tree.command(name="quran",description="Read an English Quran verse in this VC chat.",guild=GUILD)
 @app_commands.describe(verse="Chapter:verse, for example 2:255",no_commentary="Show just the verse without the notes link")
