@@ -1,1 +1,10 @@
-# Submission-Quran-Reader-
+# Submission Quran Reader
+This is a standalone English text reader for the four configured VC text chats. It does not join voice, run prayer reminders, grant roles or write Grand Quran Study progress.
+
+1. In the Discord Developer Portal create a **new** application called Submission Quran Reader. Under Bot, generate its token. Keep it private. No privileged intents are needed.
+2. Under Installation, enable Guild Install with bot and applications.commands. Request View Channels, Send Messages and Embed Links. Use the installation link to add the app to Submission. Ensure the reader can see and post in the four VC chats, and readers can use application commands there.
+3. Unzip and upload the four project files and this README to the root of a new GitHub repository. In Railway create a new service from that repository. Set DISCORD_TOKEN in this new service to the new bot's token. Do not replace your verification service or its variables. No public port is needed. Optional: attach a volume at /data and set DATA_DIR=/data so the validated English text survives redeploys.
+4. After the log says Registered /quran, choose the command from Submission Quran Reader in #vc1-chat. Try verse 2:255, check against the edition you use, then test Next, Previous, and no-commentary:True. Notes are provided via a source link, not inline. Buttons last one hour or until restart; run the command again to continue. Other people can read the post and start independent readings. The first lookup needs access to submission.org.
+5. Before removing WikiSubmission, check whether it supplies your prayer commands or feeds an enabled study tracker. The existing optional tracker filters by VERSE_BOT_ID; replacing a reader does not update that setting or verify tracker compatibility. If you still need either feature, keep the old app installed until tested separately. When ready, use Kick 'WikiSubmission' in its Discord member menu.
+
+Defaults are for Submission. GUILD_ID and READER_CHANNEL_IDS (comma-separated text channel IDs) can override the defaults. This uses the same Quran Inspector source and verse numbering as the existing study code.
