@@ -5,7 +5,7 @@ import re
 import discord
 from discord import app_commands
 from source import (InputError, refs, indices, parse_reference, reference_label,
-                    render_passage, render_appendix, appendix_path)
+                    render_passage, render_appendix, appendix_path, passage_text_pages)
 
 GUILD = discord.Object(id=int(os.getenv('GUILD_ID', '911268076933230662')))
 CHANNELS = {int(i.strip()) for i in os.getenv('READER_CHANNEL_IDS', '915639051967676496,915639080119849030,1075986349607358544,1082833497812648046').split(',') if i.strip()}
@@ -15,7 +15,7 @@ render_lock = asyncio.Lock()
 class Reader(discord.Client):
     async def setup_hook(self):
         await tree.sync(guild=GUILD)
-        print('Quran Reader v5: offline edition, God casing, ranges, /appendix and saved study progress. Server:', GUILD.id, flush=True)
+        print('Quran Reader v6: selectable Quran text; offline edition, God casing, ranges, /appendix and saved study progress. Server:', GUILD.id, flush=True)
 
 client = Reader(intents=discord.Intents(guilds=True,guild_messages=True,message_content=True),allowed_mentions=NO_MENTIONS)
 tree = app_commands.CommandTree(client)
@@ -28,12 +28,21 @@ async def render(kind, first, last, page):
         return await asyncio.to_thread(render_appendix, first, page)
 
 async def panel(kind,first,last,owner,page=0):
-    image,total=await render(kind,first,last,page)
+    if kind == 'quran':
+        async with render_lock:
+            pages = await asyncio.to_thread(passage_text_pages, first, last)
+        total = len(pages)
+        image = None
+    else:
+        image,total=await render(kind,first,last,page)
     title=f'[{reference_label(first,last)}]' if kind=='quran' else (f'Appendix {first}' if first is not None else 'Appendix index')
     embed=discord.Embed(title=title,description='Quran: The Final Testament · English')
-    embed.set_image(url='attachment://reading.png')
+    if kind == 'quran':
+        embed.description = pages[page]
+    else:
+        embed.set_image(url='attachment://reading.png')
     embed.set_footer(text=f'Page {page+1} of {total}')
-    file=discord.File(image,filename='reading.png')
+    file=discord.File(image,filename='reading.png') if image is not None else None
     view=discord.ui.View(timeout=3600)
     single=kind=='quran' and first==last and total==1
     for delta,label in ((-1,'Previous verse' if single else 'Previous page'),(1,'Next verse' if single else 'Next page')):
@@ -49,7 +58,7 @@ async def panel(kind,first,last,owner,page=0):
                     e,f,w=await panel(kind,refs[dest],refs[dest],owner)
                 else:
                     e,f,w=await panel(kind,first,last,owner,dest)
-                await it.edit_original_response(embed=e,attachments=[f],view=w)
+                await it.edit_original_response(embed=e,attachments=[f] if f is not None else [],view=w)
                 view.stop()
             except Exception:
                 logging.exception('Reader navigation failed')
@@ -71,7 +80,7 @@ async def on_message(m):
     try:
         first,last=parse_reference(m.content)
         e,f,w=await panel('quran',first,last,m.author.id)
-        await m.channel.send(embed=e,file=f,view=w)
+        await m.channel.send(embed=e,view=w,**({"file": f} if f is not None else {}))
     except InputError as exc:
         await m.channel.send(str(exc))
     except Exception:
@@ -88,7 +97,7 @@ async def quran(it:discord.Interaction,verse:str):
     except InputError as exc:return await it.response.send_message(str(exc),ephemeral=True)
     await it.response.defer()
     e,f,w=await panel('quran',first,last,it.user.id)
-    await it.edit_original_response(embed=e,attachments=[f],view=w)
+    await it.edit_original_response(embed=e,attachments=[f] if f is not None else [],view=w)
 
 @tree.command(name='appendix',description='Read an appendix or see the index of all 38.',guild=GUILD)
 @app_commands.describe(number='Choose 1–38, or leave blank for the index')
@@ -97,7 +106,7 @@ async def appendix(it:discord.Interaction,number:app_commands.Range[int,1,38]=No
         return await it.response.send_message('Use this in a configured VC text chat.',ephemeral=True)
     await it.response.defer()
     e,f,w=await panel('appendix',number,None,it.user.id)
-    await it.edit_original_response(embed=e,attachments=[f],view=w)
+    await it.edit_original_response(embed=e,attachments=[f] if f is not None else [],view=w)
 
 study_lock = asyncio.Lock()
 STUDY_HOST_IDS = {int(v.strip()) for v in os.getenv('STUDY_HOST_IDS', '').split(',') if v.strip().isdigit()}

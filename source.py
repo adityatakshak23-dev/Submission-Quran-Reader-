@@ -100,3 +100,53 @@ def render_appendix(number,page_number=0):
     with fitz.open(appendix_path(number)) as doc:
         if not 0 <= page_number < len(doc): raise InputError('Page is outside this appendix.')
         return BytesIO(doc[page_number].get_pixmap(matrix=fitz.Matrix(1.8,1.8)).tobytes('png')),len(doc)
+
+
+def verse_text(doc, ref):
+    """Read positioned text in column order, including replacement God spans."""
+    lines_out = []
+    for pn, rect in passage_strips(doc, ref, ref):
+        rows = {}
+        for block in doc[pn].get_text('dict')['blocks']:
+            for line in block.get('lines', []):
+                for span in line['spans']:
+                    x, baseline = span['origin']
+                    if not span['text'].strip() or span['size'] < 10:
+                        continue
+                    if rect.x0 <= x < rect.x1 and rect.y0 + 4 <= baseline < rect.y1 + 5:
+                        key = next((k for k in rows if abs(k - baseline) < 2), baseline)
+                        rows.setdefault(key, []).append((x, span['text']))
+        for baseline, spans in sorted(rows.items()):
+            spans.sort()
+            text = ' '.join(t.strip() for _, t in spans)
+            text = re.sub(r'\s+([,.;:!?’])', r'\1', text)
+            if text.startswith(('*', '♦', 'Sura ')):
+                break
+            # Verse continuations are left aligned; section headings are centred.
+            if spans[0][0] > (66 if pn == 0 else (67 if rect.x0 < 100 else 245)):
+                continue
+            lines_out.append(text)
+    text = '\n'.join(lines_out)
+    text = re.sub(r'-\s*\n\s*', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    number = ref.split(':')[1]
+    prefix = re.match(r'^' + number + r'\.\s*', text)
+    if not prefix:
+        raise InputError('Could not extract this verse from the supplied edition.')
+    return re.sub(r'\bGOD\b', 'God', text[prefix.end():]).replace('*', '').strip()
+
+def passage_text_pages(first, last):
+    """Keep selectable text within Discord embed limits without truncating."""
+    pages = []; current = ''
+    with fitz.open(ROOT / 'reading.pdf') as doc:
+        for ref in refs[indices[first]:indices[last] + 1]:
+            text = f'**[{ref}]** ' + verse_text(doc, ref)
+            while len(text) > 3800:
+                cut = text.rfind(' ', 0, 3800)
+                if current: pages.append(current); current = ''
+                pages.append(text[:cut]); text = text[cut:].lstrip()
+            if current and len(current) + len(text) + 2 > 3800:
+                pages.append(current); current = ''
+            current += ('\n\n' if current else '') + text
+    if current: pages.append(current)
+    return pages
