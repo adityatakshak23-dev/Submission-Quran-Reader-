@@ -116,7 +116,7 @@ STUDY_HOST_IDS = {int(v.strip()) for v in os.getenv('STUDY_HOST_IDS', '').split(
 async def study_update(it: discord.Interaction, verse: str):
     if it.guild_id != GUILD.id:
         return await it.response.send_message('Use this in Submission.', ephemeral=True)
-    if not (it.user.id in STUDY_HOST_IDS or it.user.guild_permissions.administrator):
+    if not (it.user.id in STUDY_HOST_IDS or it.permissions.administrator):
         return await it.response.send_message('Only a designated study host or administrator can update study progress.', ephemeral=True)
     try:
         parse_reference(verse)
