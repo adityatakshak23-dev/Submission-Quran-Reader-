@@ -1,93 +1,102 @@
-import asyncio, os
+"""Offline reading from the supplied English edition; no scripture web service."""
+from io import BytesIO
+import json
+import re
 from pathlib import Path
-import aiohttp
-DATA_DIR=Path(os.getenv("DATA_DIR","./data"))
-DATA_DIR.mkdir(parents=True,exist_ok=True)
-class SetupError(ValueError): pass
-QURAN_TEXT_URL = "https://submission.org/QI2d/QI2_EN_data"
-QURAN_CACHE_FILE = DATA_DIR / "quran_inspector_english.txt"
-QURAN_COUNTS = (7,286,200,176,120,165,206,75,127,109,123,111,43,52,99,128,111,110,98,135,112,78,118,64,77,227,93,88,69,60,34,30,73,54,45,83,182,88,75,85,54,53,89,59,37,35,38,29,18,45,60,49,62,55,78,96,29,22,24,13,14,11,11,18,12,12,30,52,52,44,28,28,20,56,40,31,50,40,46,42,29,19,36,25,22,17,19,26,30,20,15,21,11,8,8,19,5,8,8,11,11,8,3,9,5,4,7,3,6,3,5,4,5,6)
-quran_text_cache = None
-reader_lock = asyncio.Lock()
+import fitz
 
+ROOT = Path(__file__).resolve().parent
+locations = json.loads((ROOT / 'locations.json').read_text())
+refs = list(locations)
+indices = {key: i for i, key in enumerate(refs)}
+REFERENCE = re.compile(r'(?:[qQ]\s*)?([0-9]{1,3})(?:\s*:\s*|\s+)([0-9]{1,3})(?:\s*[-–]\s*([0-9]{1,3}))?')
+MAX_HEIGHT = 510
 
-def validate_reference(chapter, verse):
-    if (type(chapter) is not int or type(verse) is not int or not 1 <= chapter <= 114
-            or not 1 <= verse <= QURAN_COUNTS[chapter - 1]):
-        raise SetupError("That verse is not in this edition. Enter a valid chapter and verse.")
+class InputError(ValueError):
+    pass
 
+def parse_reference(value):
+    match = REFERENCE.fullmatch(value.strip())
+    if not match:
+        raise InputError('Use q1:1-7 or q2:225. With /quran, enter 1:1-7 or 2:225.')
+    chapter, first = map(int, match.groups()[:2])
+    last = int(match.group(3) or first)
+    if last < first:
+        raise InputError('The ending verse must be the same as or greater than the starting verse.')
+    selected = [f'{chapter}:{verse}' for verse in range(first, last + 1)]
+    if not selected or any(ref not in indices for ref in selected):
+        raise InputError('That verse or range is not in the supplied edition. Use a range within one chapter.')
+    return selected[0], selected[-1]
 
-def adjacent_reference(chapter, verse, direction):
-    validate_reference(chapter, verse)
-    if direction == 1:
-        if verse < QURAN_COUNTS[chapter - 1]:
-            return chapter, verse + 1
-        if chapter < 114:
-            return chapter + 1, 1
-    elif direction == -1:
-        if verse > 1:
-            return chapter, verse - 1
-        if chapter > 1:
-            return chapter - 1, QURAN_COUNTS[chapter - 2]
-    raise SetupError("You are at the beginning or end of the Quran.")
+def reference_label(first, last):
+    return first if first == last else f'{first}-{last.split(":")[1]}'
 
+def passage_strips(doc, first, last):
+    page, col, y = locations[first]
+    last_page, last_col, last_y = locations[last]
+    i = indices[last] + 1
+    endpage, endcol, end_y = locations[refs[i]] if i < len(refs) else (last_page, last_col, 606)
+    # At chapter boundaries, stop before a new chapter heading or footnote.
+    if i == len(refs) or refs[i].split(':')[0] != last.split(':')[0]:
+        x1,x2 = (32,404) if last_page == 0 else ((30,218) if last_col == 0 else (214,405))
+        candidates=[]
+        for block in doc[last_page].get_text('dict')['blocks']:
+            for line in block.get('lines', []):
+                text=''.join(s['text'] for s in line['spans']).strip()
+                box=fitz.Rect(line['bbox'])
+                if box.y0 > last_y + 3 and x1 <= box.x0 < x2 and (text.startswith('*') or re.match(r'Sura\s+\d+',text)):
+                    candidates.append(box.y0)
+        if candidates:
+            endpage, endcol, end_y = last_page, last_col, min(candidates)
+    strips=[]
+    for pn in range(page,endpage+1):
+        for side in range(1 if pn==0 else 2):
+            if not (page,col) <= (pn,side) <= (endpage,endcol):
+                continue
+            top=max(0,y-2) if (pn,side)==(page,col) else 53
+            bottom=end_y-2 if (pn,side)==(endpage,endcol) else 606
+            x1,x2=(32,404) if pn==0 else ((30,218) if side==0 else (214,405))
+            if bottom-top >= 8:
+                strips.append((pn,fitz.Rect(x1,top,x2,bottom)))
+    if not strips:
+        raise InputError('This passage could not be rendered.')
+    return strips
 
-def parse_quran_text(raw):
-    # Inspector numbers its verse records with 112 separate Basmala records.
-    rows = {}
-    for line in raw.splitlines():
-        parts = line.split("|")
-        if parts[0] != "v":
-            continue
-        if len(parts) < 3 or not parts[1].isdigit():
-            raise ValueError("Invalid Quran source row")
-        index, text = int(parts[1]), parts[2].strip()
-        if index in rows or not text or len(text) > 3500 or "<" in text:
-            raise ValueError("Invalid or duplicate Quran verse")
-        rows[index] = text
-    if set(rows) != set(range(1, 6347)):
-        raise ValueError("Incomplete Quran source")
-    verses = {}
-    offset = 0
-    for chapter, count in enumerate(QURAN_COUNTS, 1):
-        for verse in range(1, count + 1):
-            verses[(chapter, verse)] = rows[offset + verse]
-        offset += count + (1 if chapter + 1 not in (9, 115) else 0)
-    if len(verses) != 6234 or verses[(42, 43)] != "Resorting to patience and forgiveness reflects a true strength of character.":
-        raise ValueError("Unexpected Quran source format or translation")
-    return verses
+def passage_pages(doc, first, last):
+    """Bound image sizes; long ranges remain navigable without truncation."""
+    pages=[]; current=[]; height=0
+    for pn, rect in passage_strips(doc,first,last):
+        top=rect.y0
+        while top < rect.y1:
+            space=MAX_HEIGHT-height
+            if space < 12:
+                pages.append(current); current=[]; height=0; space=MAX_HEIGHT
+            bottom=min(rect.y1,top+space-4)
+            current.append((pn,fitz.Rect(rect.x0,top,rect.x1,bottom)))
+            height+=bottom-top+4; top=bottom
+    if current: pages.append(current)
+    return pages
 
+def render_passage(first,last,page_number=0):
+    with fitz.open(ROOT/'reading.pdf') as doc:
+        pages=passage_pages(doc,first,last)
+        if not 0 <= page_number < len(pages): raise InputError('Page is outside this passage.')
+        strips=pages[page_number]
+        with fitz.open() as out:
+            width=max(r.width for _,r in strips)
+            height=sum(r.height+4 for _,r in strips)
+            page=out.new_page(width=width,height=height); offset=0
+            for pn,r in strips:
+                page.show_pdf_page(fitz.Rect(0,offset,r.width,offset+r.height),doc,pn,clip=r)
+                offset+=r.height+4
+            return BytesIO(page.get_pixmap(matrix=fitz.Matrix(2.4,2.4)).tobytes('png')),len(pages)
 
-async def get_quran_text():
-    global quran_text_cache
-    if quran_text_cache is not None:
-        return quran_text_cache
-    if QURAN_CACHE_FILE.exists():
-        try:
-            quran_text_cache = parse_quran_text(QURAN_CACHE_FILE.read_text(encoding="utf-8"))
-            return quran_text_cache
-        except (ValueError, OSError):
-            raise SetupError("The saved Quran text could not be validated. Ask the maintainer to check it.")
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), trust_env=True) as session:
-            async with session.get(QURAN_TEXT_URL) as response:
-                response.raise_for_status()
-                chunks, size = [], 0
-                async for chunk in response.content.iter_chunked(65536):
-                    size += len(chunk)
-                    if size > 3_000_000:
-                        raise ValueError("Quran source too large")
-                    chunks.append(chunk)
-                raw = b"".join(chunks).decode("utf-8-sig")
-        data = parse_quran_text(raw)
-        temporary = QURAN_CACHE_FILE.with_suffix(".tmp")
-        with temporary.open("w", encoding="utf-8") as stream:
-            stream.write(raw)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, QURAN_CACHE_FILE)
-        quran_text_cache = data
-        return data
-    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, OSError) as error:
-        raise SetupError("Quran text could not be loaded. Please retry /quran.") from error
+def appendix_path(number):
+    if number is not None and (type(number) is not int or not 1 <= number <= 38):
+        raise InputError('Choose an appendix from 1 to 38.')
+    return ROOT/'appendices'/(f'{number}.pdf' if number is not None else 'index.pdf')
 
+def render_appendix(number,page_number=0):
+    with fitz.open(appendix_path(number)) as doc:
+        if not 0 <= page_number < len(doc): raise InputError('Page is outside this appendix.')
+        return BytesIO(doc[page_number].get_pixmap(matrix=fitz.Matrix(1.8,1.8)).tobytes('png')),len(doc)

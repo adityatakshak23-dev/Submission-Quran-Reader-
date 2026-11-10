@@ -1,10 +1,26 @@
-# Submission Quran Reader
-This is a standalone English text reader for the four configured VC text chats. It does not join voice, run prayer reminders, grant roles or write Grand Quran Study progress.
+# Submission Quran Reader — v5
 
-1. In the Discord Developer Portal create a **new** application called Submission Quran Reader. Under Bot, generate its token. Keep it private. No privileged intents are needed.
-2. Under Installation, enable Guild Install with bot and applications.commands. Request View Channels, Send Messages and Embed Links. Use the installation link to add the app to Submission. Ensure the reader can see and post in the four VC chats, and readers can use application commands there.
-3. Unzip and upload the four project files and this README to the root of a new GitHub repository. In Railway create a new service from that repository. Set DISCORD_TOKEN in this new service to the new bot's token. Do not replace your verification service or its variables. No public port is needed. Optional: attach a volume at /data and set DATA_DIR=/data so the validated English text survives redeploys.
-4. After the log says Registered /quran, choose the command from Submission Quran Reader in #vc1-chat. Try verse 2:255, check against the edition you use, then test Next, Previous, and no-commentary:True. Notes are provided via a source link, not inline. Buttons last one hour or until restart; run the command again to continue. Other people can read the post and start independent readings. The first lookup needs access to submission.org.
-5. Before removing WikiSubmission, check whether it supplies your prayer commands or feeds an enabled study tracker. The existing optional tracker filters by VERSE_BOT_ID; replacing a reader does not update that setting or verify tracker compatibility. If you still need either feature, keep the old app installed until tested separately. When ready, use Kick 'WikiSubmission' in its Discord member menu.
+## Reading
+- `q2:225` or `Q2:225`: one verse.
+- `q1:1-7`: a range within one chapter.
+- `/quran verse:1:1-7`: slash-command equivalent.
+- `/appendix number:2`: Appendix 2, with page navigation and PDF download.
+- `/appendix`: index of all 38 appendices.
 
-Defaults are for Submission. GUILD_ID and READER_CHANNEL_IDS (comma-separated text channel IDs) can override the defaults. This uses the same Quran Inspector source and verse numbering as the existing study code.
+The supplied English book is bundled locally. The reader shows images cropped from the edition, with God capitalised as “God”. There are no external scripture service calls or source-site buttons. Long passages have page navigation. At printed page boundaries, surrounding notes can appear. Buttons last one hour; run the command again afterward.
+
+## Saved Quran study progress
+- `/study_update verse:1:1-7`: save the passage actually read. Host confirmation is deliberate; verse lookups do not change study progress.
+- `/study_latest`: display the latest saved passage and last verse.
+- To seed the reader with previous study progress, use `/study_update` with the last known passage. This does not import or modify the verification bot's older study records.
+- Set `STUDY_HOST_IDS` to the comma-separated Discord user IDs permitted to update progress. Server administrators can also update it. No Administrator grant is needed for designated hosts.
+- Attach a Railway volume to THIS reader service at `/data`. The study history is written there. `READER_DATA_DIR` can override the path. A volume is required to retain progress across redeployments. Run one replica.
+
+## Deployment
+1. Extract this ZIP. Upload all files and the complete appendices directory to the root of the existing Quran Reader GitHub repository. Keep filenames unchanged. Do not upload to the verification bot repository.
+2. Keep the reader's existing `DISCORD_TOKEN`. Message Content Intent must remain enabled for q/Q messages.
+3. Add the reader's `/data` volume and `STUDY_HOST_IDS` as above.
+4. Commit to the branch Railway deploys and wait for Active. The startup line identifies Quran Reader v5.
+5. Test `q1:1-7`, `/appendix number:2`, `/study_update verse:1:1-7`, then `/study_latest`.
+
+The bot needs View Channel, Send Messages, Embed Links and Attach Files in the configured reading chats. Existing `GUILD_ID` and `READER_CHANNEL_IDS` overrides remain supported. Default reading channels are the four existing VC text chats. The study command names differ from the verification bot's study commands to avoid confusion. Existing verification tickets, roles, and records are untouched.
