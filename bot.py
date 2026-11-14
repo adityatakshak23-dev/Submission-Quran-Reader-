@@ -5,7 +5,7 @@ import re
 import discord
 from discord import app_commands
 from source import (InputError, refs, indices, parse_reference, reference_label,
-                    render_passage, render_appendix, appendix_path, passage_text_pages)
+                    render_passage, render_appendix, appendix_path, passage_text_pages, chapter_title)
 
 GUILD = discord.Object(id=int(os.getenv('GUILD_ID', '911268076933230662')))
 CHANNELS = {int(i.strip()) for i in os.getenv('READER_CHANNEL_IDS', '915639051967676496,915639080119849030,1075986349607358544,1082833497812648046').split(',') if i.strip()}
@@ -36,13 +36,18 @@ async def panel(kind,first,last,owner,page=0):
     else:
         image,total=await render(kind,first,last,page)
     if page == -1: page = total - 1
-    title=f'[{reference_label(first,last)}]' if kind=='quran' else (f'Appendix {first}' if first is not None else 'Appendix index')
+    title=chapter_title(first,last) if kind=='quran' else (f'Appendix {first}' if first is not None else 'Appendix index')
     embed=discord.Embed(title=title,description='Quran: The Final Testament · English')
     if kind == 'quran':
         embed.description = pages[page]
     else:
         embed.set_image(url='attachment://reading.png')
-    embed.set_footer(text=f'Page {page+1} of {total}')
+    if kind == 'quran':
+        footer = 'Quran: The Final Testament'
+        if total > 1: footer += f' • Page {page+1} of {total}'
+        embed.set_footer(text=footer)
+    else:
+        embed.set_footer(text=f'Page {page+1} of {total}')
     file=discord.File(image,filename='reading.png') if image is not None else None
     view=discord.ui.View(timeout=3600)
     # Move within a long passage first, then continue with an equally sized range.
