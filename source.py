@@ -29,7 +29,10 @@ def parse_reference(value):
     return selected[0], selected[-1]
 
 def reference_label(first, last):
-    return first if first == last else f'{first}-{last.split(":")[1]}'
+    if first == last:
+        return first
+    end = last.split(':')[1] if first.split(':')[0] == last.split(':')[0] else last
+    return f'{first}-{end}'
 
 def passage_strips(doc, first, last):
     page, col, y = locations[first]
@@ -38,7 +41,7 @@ def passage_strips(doc, first, last):
     endpage, endcol, end_y = locations[refs[i]] if i < len(refs) else (last_page, last_col, 606)
     # At chapter boundaries, stop before a new chapter heading or footnote.
     if i == len(refs) or refs[i].split(':')[0] != last.split(':')[0]:
-        x1,x2 = (32,404) if last_page == 0 else ((30,218) if last_col == 0 else (214,405))
+        x1,x2 = (32,404) if last_page == 0 else ((30,216) if last_col == 0 else (216,405))
         candidates=[]
         for block in doc[last_page].get_text('dict')['blocks']:
             for line in block.get('lines', []):
@@ -55,7 +58,7 @@ def passage_strips(doc, first, last):
                 continue
             top=max(0,y-2) if (pn,side)==(page,col) else 53
             bottom=end_y-2 if (pn,side)==(endpage,endcol) else 606
-            x1,x2=(32,404) if pn==0 else ((30,218) if side==0 else (214,405))
+            x1,x2=(32,404) if pn==0 else ((30,216) if side==0 else (216,405))
             if bottom-top >= 8:
                 strips.append((pn,fitz.Rect(x1,top,x2,bottom)))
     if not strips:
@@ -135,18 +138,39 @@ def verse_text(doc, ref):
         raise InputError('Could not extract this verse from the supplied edition.')
     return re.sub(r'\bGOD\b', 'God', text[prefix.end():]).replace('*', '').strip()
 
+def text_corpus():
+    # Loaded once; edition text, section titles and editorial notes remain distinct.
+    global _corpus
+    if '_corpus' not in globals():
+        _corpus = json.loads((ROOT / 'quran_text.json').read_text(encoding='utf-8'))
+    return _corpus
+
 def passage_text_pages(first, last):
-    """Keep selectable text within Discord embed limits without truncating."""
+    """Include the edition's headings and footnotes, with bounded text pages."""
+    corpus = text_corpus()
+    sections = []
+    notes = []
+    seen = set()
+    for ref in refs[indices[first]:indices[last] + 1]:
+        entry = corpus[ref]
+        if entry['heading']:
+            sections.append('**' + entry['heading'].replace('*', '') + '**')
+        sections.append(f'**[{ref}]** ' + entry['text'])
+        for note in entry['notes']:
+            if note['text'] not in seen:
+                seen.add(note['text']); notes.append(note['text'])
+    if notes:
+        sections.append('**Footnotes — from the edition**')
+        sections.extend(n.replace('*', r'\*') for n in notes)
     pages = []; current = ''
-    with fitz.open(ROOT / 'reading.pdf') as doc:
-        for ref in refs[indices[first]:indices[last] + 1]:
-            text = f'**[{ref}]** ' + verse_text(doc, ref)
-            while len(text) > 3800:
-                cut = text.rfind(' ', 0, 3800)
-                if current: pages.append(current); current = ''
-                pages.append(text[:cut]); text = text[cut:].lstrip()
-            if current and len(current) + len(text) + 2 > 3800:
-                pages.append(current); current = ''
-            current += ('\n\n' if current else '') + text
+    for text in sections:
+        while len(text) > 3800:
+            cut = text.rfind(' ', 0, 3800)
+            if cut <= 0: cut = 3800
+            if current: pages.append(current); current = ''
+            pages.append(text[:cut]); text = text[cut:].lstrip()
+        if current and len(current) + len(text) + 2 > 3800:
+            pages.append(current); current = ''
+        current += ('\n\n' if current else '') + text
     if current: pages.append(current)
     return pages

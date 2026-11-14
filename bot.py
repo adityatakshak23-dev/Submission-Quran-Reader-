@@ -15,7 +15,7 @@ render_lock = asyncio.Lock()
 class Reader(discord.Client):
     async def setup_hook(self):
         await tree.sync(guild=GUILD)
-        print('Quran Reader v6: selectable Quran text; offline edition, God casing, ranges, /appendix and saved study progress. Server:', GUILD.id, flush=True)
+        print('Quran Reader v8: Quran text, headings, footnotes, semantic search, ranges, appendices and saved study progress. Server:', GUILD.id, flush=True)
 
 client = Reader(intents=discord.Intents(guilds=True,guild_messages=True,message_content=True),allowed_mentions=NO_MENTIONS)
 tree = app_commands.CommandTree(client)
@@ -35,6 +35,7 @@ async def panel(kind,first,last,owner,page=0):
         image = None
     else:
         image,total=await render(kind,first,last,page)
+    if page == -1: page = total - 1
     title=f'[{reference_label(first,last)}]' if kind=='quran' else (f'Appendix {first}' if first is not None else 'Appendix index')
     embed=discord.Embed(title=title,description='Quran: The Final Testament · English')
     if kind == 'quran':
@@ -44,20 +45,27 @@ async def panel(kind,first,last,owner,page=0):
     embed.set_footer(text=f'Page {page+1} of {total}')
     file=discord.File(image,filename='reading.png') if image is not None else None
     view=discord.ui.View(timeout=3600)
-    single=kind=='quran' and first==last and total==1
-    for delta,label in ((-1,'Previous verse' if single else 'Previous page'),(1,'Next verse' if single else 'Next page')):
-        target=indices[first]+delta if single else page+delta
-        valid=0<=target<(len(refs) if single else total)
-        button=discord.ui.Button(label=label,disabled=not valid)
-        async def move(it,dest=target):
-            if it.user.id!=owner:
-                return await it.response.send_message('Start your own reading with /quran or /appendix.',ephemeral=True)
+    # Move within a long passage first, then continue with an equally sized range.
+    for delta in (-1, 1):
+        next_first, next_last, next_page = first, last, page + delta
+        valid = 0 <= next_page < total
+        label = 'Previous page' if delta < 0 else 'Next page'
+        if kind == 'quran' and not valid:
+            width = indices[last] - indices[first] + 1
+            start = indices[first] - width if delta < 0 else indices[last] + 1
+            end = indices[first] - 1 if delta < 0 else start + width - 1
+            valid = end >= 0 and start < len(refs)
+            if valid:
+                next_first, next_last = refs[max(0, start)], refs[min(len(refs)-1, end)]
+            next_page = -1 if delta < 0 else 0
+            label = 'Previous verses' if delta < 0 else 'Next verses'
+        button = discord.ui.Button(label=label, disabled=not valid)
+        async def move(it, nf=next_first, nl=next_last, np=next_page):
+            if kind == 'appendix' and it.user.id != owner:
+                return await it.response.send_message('Start your own appendix with /appendix.', ephemeral=True)
             await it.response.defer()
             try:
-                if single:
-                    e,f,w=await panel(kind,refs[dest],refs[dest],owner)
-                else:
-                    e,f,w=await panel(kind,first,last,owner,dest)
+                e,f,w = await panel(kind,nf,nl,owner,np)
                 await it.edit_original_response(embed=e,attachments=[f] if f is not None else [],view=w)
                 view.stop()
             except Exception:
@@ -108,21 +116,80 @@ async def appendix(it:discord.Interaction,number:app_commands.Range[int,1,38]=No
     e,f,w=await panel('appendix',number,None,it.user.id)
     await it.edit_original_response(embed=e,attachments=[f] if f is not None else [],view=w)
 
+@tree.command(name='quran_search', description='Find Quran verses by words, phrases, or meaning.', guild=GUILD)
+@app_commands.describe(query='For example: comfort during hardship, or doubts and hypocrisy')
+async def quran_search(it: discord.Interaction, query: str):
+    if it.guild_id != GUILD.id or it.channel_id not in CHANNELS:
+        return await it.response.send_message('Use this in a configured VC text chat.', ephemeral=True)
+    if not 2 <= len(query.strip()) <= 300:
+        return await it.response.send_message('Enter between 2 and 300 characters.', ephemeral=True)
+    await it.response.defer()
+    try:
+        from search import search_verses
+        matches = await asyncio.to_thread(search_verses, query)
+    except Exception:
+        logging.exception('Semantic search failed')
+        return await it.edit_original_response(content='Search is unavailable. Check the Railway search-index build logs; verse reading still works.')
+    embed = discord.Embed(title='Quran search', description='Possible matches. Select a verse to read its full text and notes.')
+    view = discord.ui.View(timeout=3600)
+    for ref, entry in matches:
+        preview = entry['text']
+        if len(preview) > 650: preview = preview[:647] + '…'
+        embed.add_field(name=f'[{ref}]', value=preview, inline=False)
+        button = discord.ui.Button(label=ref)
+        async def open_verse(interaction, selected=ref):
+            await interaction.response.defer()
+            e,f,w = await panel('quran', selected, selected, interaction.user.id)
+            await interaction.followup.send(embed=e, view=w)
+        button.callback = open_verse
+        view.add_item(button)
+    embed.set_footer(text='Matches by meaning and wording • Quran: The Final Testament')
+    await it.edit_original_response(embed=embed, view=view)
+
 study_lock = asyncio.Lock()
 STUDY_HOST_IDS = {int(v.strip()) for v in os.getenv('STUDY_HOST_IDS', '').split(',') if v.strip().isdigit()}
+
+STUDY_ROLE_IDS = {int(v.strip()) for v in os.getenv('STUDY_ROLE_IDS', '').split(',') if v.strip().isdigit()}
+
+async def study_access(it):
+    if it.guild_id != GUILD.id:
+        return False
+    if it.user.id in STUDY_HOST_IDS or it.permissions.administrator:
+        return True
+    if it.guild and it.guild.owner_id == it.user.id:
+        return True
+    member = it.user
+    if it.guild:
+        try:
+            member = await it.guild.fetch_member(it.user.id)
+        except discord.HTTPException:
+            pass
+    return (getattr(member, 'guild_permissions', discord.Permissions.none()).administrator
+            or any(r.id in STUDY_ROLE_IDS for r in getattr(member, 'roles', [])))
+
+@tree.command(name='study_access', description='Check your Grand Quran Study update access.', guild=GUILD)
+async def study_access_command(it: discord.Interaction):
+    await it.response.defer(ephemeral=True)
+    allowed = await study_access(it)
+    roles = ', '.join(f'{r.name} ({r.id})' for r in getattr(it.user, 'roles', []) if not r.is_default()) or 'None'
+    await it.followup.send(
+        f'Reader v8 | Study update allowed: {allowed}\n'
+        f'Your user ID: {it.user.id}\n'
+        f'Discord Administrator permission: {it.permissions.administrator}\n'
+        f'Roles: {roles}'[:1900], ephemeral=True)
 
 @tree.command(name='study_update', description='Host: save the verse or range actually read in Quran study.', guild=GUILD)
 @app_commands.describe(verse='Last passage read, for example 1:1-7 or 2:225')
 async def study_update(it: discord.Interaction, verse: str):
     if it.guild_id != GUILD.id:
         return await it.response.send_message('Use this in Submission.', ephemeral=True)
-    if not (it.user.id in STUDY_HOST_IDS or it.permissions.administrator):
-        return await it.response.send_message('Only a designated study host or administrator can update study progress.', ephemeral=True)
+    await it.response.defer(ephemeral=True)
+    if not await study_access(it):
+        return await it.followup.send('Study access is not configured for your account. Run /study_access and send its result to the bot maintainer.', ephemeral=True)
     try:
         parse_reference(verse)
     except InputError as exc:
-        return await it.response.send_message(str(exc), ephemeral=True)
-    await it.response.defer(ephemeral=True)
+        return await it.followup.send(str(exc), ephemeral=True)
     from study import record
     async with study_lock:
         entry = record(verse, it.user.id)
@@ -138,7 +205,7 @@ async def study_latest(it: discord.Interaction):
     if not history:
         return await it.response.send_message('No study passage saved in this reader yet. A host can use /study_update.', ephemeral=True)
     entry = history[-1]
-    embed = discord.Embed(title='Latest Quran study', description=f"Passage read: **{entry['passage']}**\nLast verse read: **{entry['last_verse']}**")
+    embed = discord.Embed(title='Latest Grand Quran Study', description=f"Passage read: **{entry['passage']}**\nLast verse read: **{entry['last_verse']}**")
     embed.set_footer(text='Saved ' + entry['recorded_at'])
     await it.response.send_message(embed=embed)
 
