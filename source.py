@@ -160,7 +160,6 @@ def passage_text_pages(first, last):
             if note['text'] not in seen:
                 seen.add(note['text']); notes.append(note['text'])
     if notes:
-        sections.append('**Footnotes — from the edition**')
         sections.extend(n.replace('*', r'\*') for n in notes)
     pages = []; current = ''
     for text in sections:
