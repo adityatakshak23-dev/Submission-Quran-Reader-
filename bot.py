@@ -5,7 +5,58 @@ import re
 import discord
 from discord import app_commands
 from source import (InputError, refs, indices, parse_reference, reference_label,
-                    render_passage, render_appendix, appendix_path, passage_text_pages, chapter_title)
+                    render_passage, render_appendix, appendix_path, text_corpus)
+
+# Reader display is kept here so older source.py files remain compatible.
+# English chapter names from the bundled edition.
+CHAPTER_NAMES = {1: 'The Key', 2: 'The Heifer', 3: 'The Amramites', 4: 'Women', 5: 'The Feast', 6: 'Livestock', 7: 'The Purgatory', 8: 'The Spoils of War', 9: 'Ultimatum', 10: 'Jonah', 11: 'Hûd', 12: 'Joseph', 13: 'Thunder', 14: 'Abraham', 15: 'Al-Hijr Valley', 16: 'The Bee', 17: 'The Children of Israel', 18: 'The Cave', 19: 'Mary', 20: 'T. H.', 21: 'The Prophets', 22: 'Pilgrimage', 23: 'The Believers', 24: 'Light', 25: 'The Statute Book', 26: 'The Poets', 27: 'The Ant', 28: 'History', 29: 'The Spider', 30: 'Romans', 31: 'Luqmãn', 32: 'Prostration', 33: 'The Parties', 34: 'Sheba', 35: 'Initiator', 36: 'Y. S.', 37: 'The Arrangers', 38: 'S', 39: 'The Throngs', 40: 'Forgiver', 41: 'Detailed', 42: 'Consultation', 43: 'Ornaments', 44: 'Smoke', 45: 'Kneeling', 46: 'The Dunes', 47: 'Muhammad', 48: 'Victory', 49: 'The Walls', 50: 'Q', 51: 'Drivers of the Winds', 52: 'Mt. Sinai', 53: 'The Stars', 54: 'The Moon', 55: 'Most Gracious', 56: 'The Inevitable', 57: 'Iron', 58: 'The Debate', 59: 'Exodus', 60: 'The Test', 61: 'The Column', 62: 'Friday', 63: 'The Hypocrites', 64: 'Mutual Blaming', 65: 'Divorce', 66: 'Prohibition', 67: 'Kingship', 68: 'The Pen', 69: 'Incontestable', 70: 'The Heights', 71: 'Noah', 72: 'Jinns', 73: 'Cloaked', 74: 'The Hidden Secret', 75: 'Resurrection', 76: 'The Human', 77: 'Dispatched', 78: 'The Event', 79: 'The Snatchers', 80: 'He Frowned', 81: 'The Rolling', 82: 'The Shattering', 83: 'The Cheaters', 84: 'The Rupture', 85: 'The Galaxies', 86: 'The Bright Star', 87: 'The Most High', 88: 'Overwhelming', 89: 'Dawn', 90: 'The Town', 91: 'The Sun', 92: 'The Night', 93: 'The Forenoon', 94: 'Cooling the Temper', 95: 'The Fig', 96: 'The Embryo', 97: 'Destiny', 98: 'Proof', 99: 'The Quake', 100: 'The Gallopers', 101: 'The Shocker', 102: 'Hoarding', 103: 'The Afternoon', 104: 'The Backbiter', 105: 'The Elephant', 106: 'Quraish', 107: 'Charity', 108: 'Bounty', 109: 'The Disbelievers', 110: 'Triumph', 111: 'Thorns', 112: 'Absoluteness', 113: 'Daybreak', 114: 'People'}
+
+def chapter_title(first, last):
+    chapters = list(dict.fromkeys(r.split(':')[0] for r in refs[indices[first]:indices[last]+1]))
+    return ' • '.join(f'Sura {ch}, {CHAPTER_NAMES[int(ch)]}' for ch in chapters)
+
+def passage_text_pages(first, last):
+    """Format subtitles, verses and italic notes without a duplicate reference title."""
+    corpus = text_corpus()
+    sections = []
+    notes = []
+    seen = set()
+    for ref in refs[indices[first]:indices[last] + 1]:
+        entry = corpus[ref]
+        heading = entry['heading']
+        if ref.endswith(':1'):
+            # Chapter names appear in the card title, not again in its subtitle.
+            marker = re.search(r'In the [Nn]ame|No Basmalah|\[Last Sura Revealed\]', heading)
+            heading = heading[marker.start():] if marker else ''
+            if heading:
+                sections.append((heading, 'plain'))
+        elif heading:
+            sections.append((heading, 'subtitle'))
+        sections.append((f'**[{ref}]** ' + entry['text'], 'plain'))
+        for note in entry['notes']:
+            if note['text'] not in seen:
+                seen.add(note['text']); notes.append(note['text'])
+    sections.extend((n, 'note') for n in notes)
+    pages = []; current = ''
+    for text, style in sections:
+        if style == 'note':
+            text = text.replace('*', r'\*').replace('_', r'\_')
+        elif style == 'subtitle':
+            text = text.replace('`', "'")
+        chunks = []
+        while len(text) > 3796:
+            cut = text.rfind(' ', 0, 3796)
+            if cut <= 0: cut = 3796
+            chunks.append(text[:cut]); text = text[cut:].lstrip()
+        chunks.append(text)
+        for chunk in chunks:
+            if style == 'note': chunk = '*' + chunk + '*'
+            elif style == 'subtitle': chunk = '`' + chunk + '`'
+            if current and len(current) + len(chunk) + 2 > 3800:
+                pages.append(current); current = ''
+            current += ('\n\n' if current else '') + chunk
+    if current: pages.append(current)
+    return pages
 
 GUILD = discord.Object(id=int(os.getenv('GUILD_ID', '911268076933230662')))
 CHANNELS = {int(i.strip()) for i in os.getenv('READER_CHANNEL_IDS', '915639051967676496,915639080119849030,1075986349607358544,1082833497812648046').split(',') if i.strip()}
@@ -15,7 +66,7 @@ render_lock = asyncio.Lock()
 class Reader(discord.Client):
     async def setup_hook(self):
         await tree.sync(guild=GUILD)
-        print('Quran Reader v8: Quran text, headings, footnotes, semantic search, ranges, appendices and saved study progress. Server:', GUILD.id, flush=True)
+        print('Quran Reader startup-fix-2026-11-15: Quran text, headings, footnotes, semantic search, ranges, appendices and saved study progress. Server:', GUILD.id, flush=True)
 
 client = Reader(intents=discord.Intents(guilds=True,guild_messages=True,message_content=True),allowed_mentions=NO_MENTIONS)
 tree = app_commands.CommandTree(client)
@@ -225,3 +276,4 @@ if __name__=='__main__':
     token=os.getenv('DISCORD_TOKEN','').strip()
     if not token:raise SystemExit('Add DISCORD_TOKEN to this Quran Reader service in Railway, then deploy.')
     client.run(token)
+
