@@ -59,14 +59,13 @@ def passage_text_pages(first, last):
     return pages
 
 GUILD = discord.Object(id=int(os.getenv('GUILD_ID', '911268076933230662')))
-CHANNELS = {int(i.strip()) for i in os.getenv('READER_CHANNEL_IDS', '915639051967676496,915639080119849030,1075986349607358544,1082833497812648046').split(',') if i.strip()}
 NO_MENTIONS = discord.AllowedMentions.none()
 render_lock = asyncio.Lock()
 
 class Reader(discord.Client):
     async def setup_hook(self):
         await tree.sync(guild=GUILD)
-        print('Quran Reader startup-fix-2026-11-15: Quran text, headings, footnotes, semantic search, ranges, appendices and saved study progress. Server:', GUILD.id, flush=True)
+        print('Quran Reader server-wide-2026-11-15: Quran text, headings, footnotes, semantic search, ranges, appendices and saved study progress. Server:', GUILD.id, flush=True)
 
 client = Reader(intents=discord.Intents(guilds=True,guild_messages=True,message_content=True),allowed_mentions=NO_MENTIONS)
 tree = app_commands.CommandTree(client)
@@ -138,7 +137,7 @@ async def panel(kind,first,last,owner,page=0):
 
 @client.event
 async def on_message(m):
-    if m.author.bot or m.webhook_id or not m.guild or m.guild.id!=GUILD.id or m.channel.id not in CHANNELS:
+    if m.author.bot or m.webhook_id or not m.guild or m.guild.id!=GUILD.id:
         return
     if not re.match(r'^[qQ]\s*[0-9]',m.content.strip()):return
     try:
@@ -155,8 +154,8 @@ async def on_message(m):
 @tree.command(name='quran',description='Read a verse or verse range from the English edition.',guild=GUILD)
 @app_commands.describe(verse='Chapter:verse or chapter:first-last, for example 1:1-7')
 async def quran(it:discord.Interaction,verse:str):
-    if it.guild_id!=GUILD.id or it.channel_id not in CHANNELS:
-        return await it.response.send_message('Use this in a configured VC text chat.',ephemeral=True)
+    if it.guild_id!=GUILD.id:
+        return await it.response.send_message('Use this in Submission.',ephemeral=True)
     try:first,last=parse_reference(verse)
     except InputError as exc:return await it.response.send_message(str(exc),ephemeral=True)
     await it.response.defer()
@@ -166,8 +165,8 @@ async def quran(it:discord.Interaction,verse:str):
 @tree.command(name='appendix',description='Read an appendix or see the index of all 38.',guild=GUILD)
 @app_commands.describe(number='Choose 1–38, or leave blank for the index')
 async def appendix(it:discord.Interaction,number:app_commands.Range[int,1,38]=None):
-    if it.guild_id!=GUILD.id or it.channel_id not in CHANNELS:
-        return await it.response.send_message('Use this in a configured VC text chat.',ephemeral=True)
+    if it.guild_id!=GUILD.id:
+        return await it.response.send_message('Use this in Submission.',ephemeral=True)
     await it.response.defer()
     e,f,w=await panel('appendix',number,None,it.user.id)
     await it.edit_original_response(embed=e,attachments=[f] if f is not None else [],view=w)
@@ -175,8 +174,8 @@ async def appendix(it:discord.Interaction,number:app_commands.Range[int,1,38]=No
 @tree.command(name='quran_search', description='Find Quran verses by words, phrases, or meaning.', guild=GUILD)
 @app_commands.describe(query='For example: comfort during hardship, or doubts and hypocrisy')
 async def quran_search(it: discord.Interaction, query: str):
-    if it.guild_id != GUILD.id or it.channel_id not in CHANNELS:
-        return await it.response.send_message('Use this in a configured VC text chat.', ephemeral=True)
+    if it.guild_id != GUILD.id:
+        return await it.response.send_message('Use this in Submission.', ephemeral=True)
     if not 2 <= len(query.strip()) <= 300:
         return await it.response.send_message('Enter between 2 and 300 characters.', ephemeral=True)
     await it.response.defer()
@@ -276,4 +275,5 @@ if __name__=='__main__':
     token=os.getenv('DISCORD_TOKEN','').strip()
     if not token:raise SystemExit('Add DISCORD_TOKEN to this Quran Reader service in Railway, then deploy.')
     client.run(token)
+
 
